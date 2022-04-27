@@ -1,66 +1,86 @@
 import express from "express";
-import querystring from "querystring";
-import spotifywebapi from "spotify-web-api-node";
+import SpotifyWebApi from "spotify-web-api-node";
 import { client_id, client_secret, redirect_uri } from "./secrets";
+
+const scopes = [
+    'user-read-currently-playing',
+    'user-read-recently-played',
+    'playlist-modify-public',
+    'playlist-modify-private',
+];
 
 const app = express();
 const port = 8888;
 
+var spotifyApi = new SpotifyWebApi({
+    clientId: client_id,
+    clientSecret: client_secret,
+    redirectUri: redirect_uri
+});
+
 function generateRandomString(length: number): string {
-    let text = "";
-    const possible =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let text = '';
+    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
     for (let i = 0; i < length; i++) {
         text += possible.charAt(Math.floor(Math.random() * possible.length));
     }
+
     return text;
 }
 
-app.get("/login", function (req, res) {
-    var state = generateRandomString(16);
-    var scope = "user-read-private user-read-email";
-    res.redirect(
-        "https://accounts.spotify.com/authorize?" +
-        querystring.stringify({
-            response_type: "code",
-            client_id: client_id,
-            scope: scope,
-            redirect_uri: redirect_uri,
-            state: state,
-        })
-    );
+var state = generateRandomString(16);
+
+app.get('/login', (req, res) => {
+    res.redirect(spotifyApi.createAuthorizeURL(scopes, state));
 });
 
-app.get("/callback", function (req, res) {
-    var code = req.query.code || null;
-    var state = req.query.state || null;
+app.get('/callback', (req, res) => {
+    const error = req.query.error;
+    const code = req.query.code as string;
+    const state = req.query.state;
 
-    if (state === null) {
-        res.redirect(
-            "/#" +
-            querystring.stringify({
-                error: "state_mismatch",
-            })
-        );
-    } else {
-        var authOptions = {
-            url: "https://accounts.spotify.com/api/token",
-            form: {
-                code: code,
-                redirect_uri: redirect_uri,
-                grant_type: "authorization_code",
-            },
-            headers: {
-                Authorization:
-                    "Basic " +
-                    Buffer.from(client_id + ":" + client_secret).toString("base64"),
-            },
-            json: true,
-        };
+    if (error) {
+        console.error('Callback Error:', error);
+        res.send(`Callback Error: ${error}`);
+        return;
     }
-    res.post(authOptions)
+
+    spotifyApi
+        .authorizationCodeGrant(code)
+        .then((data: { body: { [x: string]: any; }; }) => {
+            const access_token = data.body['access_token'];
+            const refresh_token = data.body['refresh_token'];
+            const expires_in = data.body['expires_in'];
+
+            spotifyApi.setAccessToken(access_token);
+            spotifyApi.setRefreshToken(refresh_token);
+
+            console.log('access_token:', access_token);
+            console.log('refresh_token:', refresh_token);
+
+            console.log(
+                `Sucessfully retreived access token. Expires in ${expires_in} s.`
+            );
+            res.send('Success! You can now close the window.');
+
+            setInterval(async () => {
+                const data = await spotifyApi.refreshAccessToken();
+                const access_token = data.body['access_token'];
+
+                console.log('The access token has been refreshed!');
+                console.log('access_token:', access_token);
+                spotifyApi.setAccessToken(access_token);
+            }, expires_in / 2 * 1000);
+        })
+        .catch((error: any) => {
+            console.error('Error getting Tokens:', error);
+            res.send(`Error getting Tokens: ${error}`);
+        });
 });
 
-app.listen(port, () => {
-    return console.log(`Example app listening on port ${port}!`);
-});
+app.listen(port, () =>
+    console.log(
+        'HTTP Server up. Now go to http://localhost:8888/login in your browser.'
+    )
+);
